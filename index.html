@@ -76,6 +76,13 @@ input[type=text],input[type=tel]{font:inherit;padding:11px 12px;border-radius:10
 .msg{font-weight:600;font-size:14px}
 .msg.erro{color:var(--erro)} .msg.ok{color:var(--ok)}
 footer{color:var(--muted);font-size:13px;padding:26px 0 34px}
+.cco-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;border-color:#7C5CFF;background:color-mix(in srgb,#7C5CFF 12%,var(--card))}
+.espera{margin-top:18px}
+.espera h2{font:800 26px/1.1 "Barlow Condensed",Barlow,sans-serif;margin:0 0 8px}
+.espera table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:15px}
+.espera th,.espera td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
+.espera th{color:var(--muted);font-weight:600;font-size:13px}
+.btn.cco{background:transparent;color:var(--muted);border:1px solid var(--line);font-weight:500}
 @media (max-width:640px){ .stats{grid-template-columns:repeat(3,1fr);gap:6px} .stat{padding:10px} .stat .v{font-size:28px} .stat .k{font-size:12px} }
 </style>
 </head>
@@ -90,6 +97,7 @@ footer{color:var(--muted);font-size:13px;padding:26px 0 34px}
 
 <main class="wrap">
   <div class="aviso" id="aviso">Carregando o mapa…</div>
+  <div class="aviso cco-bar" id="ccoBar" hidden><span><b>🔑 Modo CCO</b> — nomes e lista de espera visíveis só para você.</span><button class="btn sec" id="bSairCco">Sair</button></div>
 
   <div class="stats">
     <div class="stat"><div class="v" id="cVagos">–</div><div class="k"><i class="dot" style="background:var(--vago)"></i>Vagos</div></div>
@@ -110,6 +118,7 @@ footer{color:var(--muted);font-size:13px;padding:26px 0 34px}
     <input class="busca" id="busca" type="search" placeholder="Procure seu grupo pelo nome" hidden>
     <span id="dicaBarra" class="dica" style="margin:0">Toque num quadrinho <b>branco</b> para reservar ou num <b>laranja</b> para entrar na lista de espera.</span>
     <div class="zoom">
+      <button class="btn cco" id="bCco" title="Acesso da comissão organizadora">🔑 Acesso CCO</button>
       <button class="btn sec" id="zMenos" aria-label="Diminuir zoom">−</button>
       <button class="btn sec" id="zMais" aria-label="Aumentar zoom">+</button>
     </div>
@@ -198,11 +207,24 @@ footer{color:var(--muted);font-size:13px;padding:26px 0 34px}
     </svg>
   </div>
   <p class="dica">No celular, arraste o mapa para os lados para ver o salão inteiro.</p>
+  <section class="espera" id="ccoEspera" hidden>
+    <h2>Lista de espera</h2>
+    <table><thead><tr><th>Nº</th><th>Fila</th><th>Nome</th><th>Litros</th><th>Desde</th></tr></thead><tbody id="tEspera"></tbody></table>
+  </section>
 </main>
 
 <footer class="wrap">
   Os dados informados na reserva (nome e WhatsApp) são usados somente pela organização do Baile do Chopp e não aparecem neste site antes do fechamento das reservas. Depois do fechamento, apenas o nome escolhido para o mapa é exibido.
 </footer>
+
+<dialog id="dlgCco">
+  <div class="mh"><h2>Acesso da CCO</h2><p>Digite o código da comissão organizadora para ver os nomes no mapa e a lista de espera.</p></div>
+  <form id="frmCco" novalidate>
+    <label>Código<input type="password" name="codigo" autocomplete="off" required></label>
+    <div class="msg" id="ccoMsg" role="status"></div>
+    <div class="acoes"><button type="button" class="btn sec" id="ccoCancelar">Cancelar</button><button type="submit" class="btn" id="ccoEntrar">Entrar</button></div>
+  </form>
+</dialog>
 
 <dialog id="dlg">
   <div class="mh"><h2 id="dTitulo"></h2><p id="dSub"></p></div>
@@ -243,8 +265,11 @@ const corDe = b => b.s === 'Confirmado' ? (Number(b.l) === 50 ? 'var(--l50)' : '
 const $ = id => document.getElementById(id);
 const fmt = iso => iso ? iso.split('-').reverse().join('/') : '';
 const reais = v => v ? v.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0}) : '';
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const norm = s => String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
 let estado = null, atual = null, modo = null, zoom = 1;
+const guardar = { get(){ try{ return localStorage.getItem('baile_cco') || ''; }catch(e){ return ''; } }, set(v){ try{ v ? localStorage.setItem('baile_cco', v) : localStorage.removeItem('baile_cco'); }catch(e){} } };
+let codigoCco = guardar.get();
 
 /* ---------- dados ---------- */
 let demoEstado = null;
@@ -268,11 +293,18 @@ async function carregar(){
     if(!API_URL || API_URL.includes('%%')){
       demoEstado = demoEstado || gerarDemo();
       estado = JSON.parse(JSON.stringify(demoEstado));
-      if(!estado.config.fechado) estado.barris.forEach(b => delete b.nome);
+      const cco = codigoCco === 'demo123';
+      if(!estado.config.fechado && !cco) estado.barris.forEach(b => delete b.nome);
+      if(cco){ estado.cco = true; estado.espera = [{n:12,posicao:1,nome:'Turma do Exemplo',l:50,data:'19/11/2026 10:00'}]; }
       estado.contadores = contar(estado);
     } else {
-      const r = await fetch(API_URL + '?t=' + Date.now());
-      estado = await r.json();
+      let r = null;
+      if(codigoCco){
+        r = await (await fetch(API_URL, { method:'POST', body: JSON.stringify({ acao:'cco', codigo:codigoCco }) })).json();
+        if(!r.ok){ codigoCco = ''; guardar.set(''); r = null; }
+      }
+      if(!r) r = await (await fetch(API_URL + '?t=' + Date.now())).json();
+      estado = r;
       if(!estado.ok) throw new Error(estado.erro || 'Erro');
     }
     render();
@@ -314,7 +346,12 @@ function render(){
   $('cVagos').textContent = cont.vagos; $('cConf').textContent = cont.aConfirmar; $('cOk').textContent = cont.confirmados;
   $('p30').textContent = [reais(c.valor30), c.ingressos30 ? c.ingressos30+' ingressos' : ''].filter(Boolean).join(' · ');
   $('p50').textContent = [reais(c.valor50), c.ingressos50 ? c.ingressos50+' ingressos' : ''].filter(Boolean).join(' · ');
-  $('busca').hidden = !fechado; $('dicaBarra').hidden = fechado;
+  $('busca').hidden = !(fechado || estado.cco); $('dicaBarra').hidden = fechado || !!estado.cco;
+  $('ccoBar').hidden = !estado.cco; $('bCco').hidden = !!estado.cco; $('ccoEspera').hidden = !estado.cco;
+  if(estado.cco){
+    const lst = estado.espera || [];
+    $('tEspera').innerHTML = lst.length ? lst.map(e => `<tr><td><b>${e.n}</b></td><td>${e.posicao}º</td><td>${esc(e.nome)}</td><td>${e.l || ''}</td><td>${esc(e.data || '')}</td></tr>`).join('') : '<tr><td colspan="5">Ninguém na lista de espera.</td></tr>';
+  }
 
   const g = $('quadros'); g.innerHTML = '';
   const aperta = [];
@@ -415,8 +452,27 @@ frm.addEventListener('submit', async e => {
 });
 dlg.addEventListener('close', () => { $('dEnviar').hidden = false; $('dCancelar').textContent = 'Cancelar'; });
 
+/* ---------- acesso CCO ---------- */
+const dlgCco = $('dlgCco'), frmCco = $('frmCco');
+$('bCco').onclick = () => { frmCco.reset(); $('ccoMsg').textContent = ''; $('ccoEntrar').disabled = false; dlgCco.showModal(); setTimeout(() => frmCco.codigo.focus(), 50); };
+$('ccoCancelar').onclick = () => dlgCco.close();
+frmCco.addEventListener('submit', async e => {
+  e.preventDefault();
+  const cod = frmCco.codigo.value.trim(), m = $('ccoMsg');
+  if(!cod) return;
+  $('ccoEntrar').disabled = true; m.className = 'msg'; m.textContent = 'Conferindo…';
+  try{
+    let r;
+    if(!API_URL || API_URL.includes('%%')) r = cod === 'demo123' ? {ok:true} : {ok:false, erro:'Código incorreto.'};
+    else r = await (await fetch(API_URL, { method:'POST', body: JSON.stringify({ acao:'cco', codigo:cod }) })).json();
+    if(!r.ok) throw new Error(r.erro || 'Código incorreto.');
+    codigoCco = cod; guardar.set(cod); dlgCco.close(); carregar();
+  }catch(err){ m.className = 'msg erro'; m.textContent = err.message; $('ccoEntrar').disabled = false; }
+});
+$('bSairCco').onclick = () => { codigoCco = ''; guardar.set(''); $('busca').value = ''; carregar(); };
+
 carregar();
-setInterval(() => { if(!dlg.open && document.visibilityState === 'visible') carregar(); }, 30000);
+setInterval(() => { if(!dlg.open && !dlgCco.open && document.visibilityState === 'visible') carregar(); }, 30000);
 </script>
 </body>
 </html>
